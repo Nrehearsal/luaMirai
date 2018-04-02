@@ -135,6 +135,13 @@ static void reslove_unbox_response_packet(const char* response, ipv4_t* target_i
 	//fetch answer
 	while(answer_count-- > 0)
 	{
+		/*each name space occupated 2 bytes of a dns response packet
+		 *---------------------answer_ares-------------------------/
+		 *--------------------name_pointer------------------------/
+		 *--------------------dns_answer_resource------------------/
+		 *--------------------data/CNAME/...-----------------------/
+		 */
+
 		dnsr = (struct dns_resource*)(dns_answer_name+2);
 		dns_answer_address = (uint8_t*)(dnsr+1);
 		if (ntohs(dnsr->qtype) == DNS_QUERY_TYPE && ntohs(dnsr->qclass) == DNS_QUERY_CLASS && ntohs(dnsr->data_len) == 4)
