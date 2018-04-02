@@ -21,6 +21,6 @@ typedef uint16_t port_t;
 #define LOCAL_ADDR INET_ADDR(127,0,0,1);
 #define SINGLE_INSTANCE_PORT 61142
 #define CNC_DOMAIN "www.return0.top"
-#define CNC_PORT 500
+#define CNC_PORT 8000
 
 #endif
