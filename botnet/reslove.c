@@ -1,3 +1,7 @@
+/* reslove.c
+ * Resolve domain name into IP addresss
+ * recently modify at 2018-04-02 by Nrehearsal
+ */
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -11,9 +15,10 @@
 #include <errno.h>
 
 
-#include "includes.h"
+#include "customize.h"
 #include "dns_format.h"
 #include "reslove.h"
+#include "mt_random.h"
 
 //Refer to the DNS protocol manual for more details.
 //----------------DNS_PACKET--------------------/
@@ -74,7 +79,8 @@ static int reslove_fill_request_packet(char* packet, const char* domain)
 	//file dns_header
 	dnsh = (struct dns_header*)packet;
 	//id
-	dns_header_id = 0x142f;
+	//dns_header_id = 0x142f;
+	dns_header_id = rand_genrand_int32() % 0xffff;
 	dnsh->id = dns_header_id;
 	//flags
 	//00000001 00000000
@@ -101,7 +107,7 @@ static int reslove_fill_request_packet(char* packet, const char* domain)
 	return sizeof(struct dns_header) + strlen(dns_query_name) + 1 + sizeof(struct dns_question);
 }
 
-static BOOL reslove_checkresponse(const char* response, const int response_packet_len, const int request_packet_len)
+static BOOL reslove_packet_is_valid(const char* response, const int response_packet_len, const int request_packet_len)
 {
 	if (response_packet_len < request_packet_len)
 	{
@@ -217,9 +223,9 @@ void reslove_dns_lookup(const char* domain, ipv4_t* target_ip)
 			continue;
 		}
 
-		//initialize the parmater
 		fcntl(F_SETFL, fd, O_NONBLOCK|fcntl(F_GETFL, fd, 0));
 
+		//initialize the parmater
 		FD_ZERO(&fdset);
 		FD_SET(fd, &fdset);
 		timeline.tv_usec = 0;
@@ -232,12 +238,11 @@ void reslove_dns_lookup(const char* domain, ipv4_t* target_ip)
 		if (nfds == -1)
 		{
 			printf("[Reslove]Select failed\n");
-			break;		
+			continue;
 		}
 		else if (nfds == 0)
 		{
 			printf("[Reslove]Cat not resolve %s to ip_addr After %d attempts\n", domain, attempts);	
-			*target_ip = 0;
 			continue;
 		}
 		else if(FD_ISSET(fd, &fdset))
@@ -246,7 +251,7 @@ void reslove_dns_lookup(const char* domain, ipv4_t* target_ip)
 			ret = recvfrom(fd, response, sizeof(response), MSG_NOSIGNAL, NULL, NULL);	
 
 			//Detect whether a valid data packet
-			if(reslove_checkresponse(response, ret, packet_len))
+			if(reslove_packet_is_valid(response, ret, packet_len))
 			{
 				printf("[Reslove]Response data from dns server is vailed, Try to unbox packet\n");
 				//unbox response

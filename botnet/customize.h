@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <arpa/inet.h>
 
 #define FALSE 0
 #define TRUE 1

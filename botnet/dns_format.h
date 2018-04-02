@@ -1,6 +1,7 @@
 #ifndef DNS_FORMAT_H
 #define DNS_FORMAT_H
 #include <stdint.h>
+/*refer to the DNS protocol manual*/
 
 struct dns_header{
 	uint16_t id, flags, question_count, answer_count, auth_count, addit_count;
