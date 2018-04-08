@@ -80,7 +80,7 @@ static int reslove_fill_request_packet(char* packet, const char* domain)
 	dnsh = (struct dns_header*)packet;
 	//id
 	//dns_header_id = 0x142f;
-	dns_header_id = rand_genrand_int32() % 0xffff;
+	dns_header_id = rand_genrand_int32() & 0xffff;
 	dnsh->id = dns_header_id;
 	//flags
 	//00000001 00000000
