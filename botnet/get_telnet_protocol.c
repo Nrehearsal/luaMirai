@@ -13,8 +13,7 @@
 #include "customize.h"
 
 #define ROUTER_ADDR "117.36.153.180"
-//#define SERVER_ADDR "192.168.1.142"
-#define SERVER_ADDR "118.89.62.21"
+#define SERVER_ADDR "192.168.1.142"
 
 int cfd, try_times;
 struct sockaddr_in serv_addr;
