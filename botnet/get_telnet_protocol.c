@@ -13,7 +13,8 @@
 #include "customize.h"
 
 #define ROUTER_ADDR "117.36.153.180"
-#define SERVER_ADDR "192.168.1.142"
+//#define SERVER_ADDR "192.168.1.142"
+#define SERVER_ADDR "118.89.62.21"
 
 int cfd, try_times;
 struct sockaddr_in serv_addr;
@@ -125,8 +126,16 @@ int main(void)
 		if (FD_ISSET(cfd, &fdread))
 		{
 			int ret;
-			data_len = recv(cfd, databuf, sizeof(databuf), MSG_NOSIGNAL);
+			ret = recv(cfd, databuf, sizeof(databuf), MSG_NOSIGNAL);
+			if (ret == 0 || ret == -1)
+			{
+				perror("select:");
+				break;
+			}
+
+			data_len = ret;
 			assert(data_len);
+
 			start_time = time(NULL);
 
 			if (databuf[0] == IAC && conn_status == TELNET_SEND_USERNAME)
@@ -220,6 +229,8 @@ int main(void)
 						}
 						break;
 					case TELNET_VERIFY_SH:
+						//printf("Running here: ");
+						//printf("%s len:%d\n", databuf, data_len+1);
 						used = is_exec_sh_success(databuf, data_len);
 						if (used > 0)
 						{
@@ -230,6 +241,7 @@ int main(void)
 							printf("%s\n", databuf);
 							printf("=======================================\n\n");
 						}
+						//printf("handle len: %d\n", used);
 						break;
 					default:
 						used = -1;
@@ -302,13 +314,19 @@ static int is_exec_sh_success(uint8_t *data, int data_len)
 	char* data_ptr = (char*)data;
 	int handle_len = -1;
 	int i;
-	int ret;
 
-	for (i = data_len; i > 0; i--)
+	/*
+	printf("**************************************\n");
+	printf("now str:");
+	printf("%s\n", data_ptr);
+	printf("**************************************\n\n");
+	*/
+
+	for (i = data_len; i >= 0; i--)
 	{
 		if (data_ptr[i] == '$' || data_ptr[i] == '#' || data_ptr[i] == '~')
 		{
-			handle_len = i;
+			handle_len = i + 1;
 			break;
 		}
 	}
@@ -323,28 +341,16 @@ static int is_pass_valid(uint8_t *data, int data_len)
 	int i;
 	int ret;
 
-	for (i = data_len; i > 0; i--)
+	for (i = data_len; i >= 0; i--)
 	{
 		if (data_ptr[i] == '#' || data_ptr[i] == '$' || data_ptr[i] == '~' || data_ptr[i] == '>' || data_ptr[i] == '%')
 		{
-			handle_len = i;
+			handle_len = i + 1;
 			break;
 		}
 	}
-	/*if (handle_len == -1)
-	  {
-#ifdef ROUTER
-ret = str_find(data, data_len, "ZXR10");	
-#else
-ret = str_find(data, data_len, "ubuntu");
-#endif
-if (ret > 0)
-{
-handle_len = ret;	
-}
-}*/
 
-return handle_len;
+	return handle_len;
 }
 
 static int can_send_username(uint8_t *data, int data_len)
@@ -354,11 +360,11 @@ static int can_send_username(uint8_t *data, int data_len)
 	int i;
 	int ret;
 
-	for (i = data_len; i > 0; i--)
+	for (i = data_len; i >= 0; i--)
 	{
 		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
 		{
-			handle_len = i;
+			handle_len = i + 1;
 			break;
 		}
 	}
@@ -383,11 +389,11 @@ static int can_send_password(uint8_t *data, int data_len)
 	int ret;
 	int i;
 
-	for (i = data_len; i > 0; i--)
+	for (i = data_len; i >= 0; i--)
 	{
 		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
 		{
-			handle_len = i;	
+			handle_len = i + 1;	
 			break;
 		}
 	}
