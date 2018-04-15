@@ -30,7 +30,7 @@ static BOOL can_get_data(uint8_t *source, int data_len, int8_t *current_pos, int
 static int can_send_username(uint8_t *data, int data_len);
 static int can_send_password(uint8_t *data, int data_len);
 static int str_find(uint8_t* source, int data_len, char* target);
-static int can_send_sh_cmd(uint8_t *data, int data_len);
+static int is_pass_valid(uint8_t *data, int data_len);
 static int is_exec_sh_success(uint8_t *data, int data_len);
 
 /*int main(void)
@@ -161,11 +161,14 @@ int main(void)
 							ret = send(cfd, "\r\n", 2, MSG_NOSIGNAL);
 							assert(ret);
 							conn_status = TELNET_SEND_PASSWORD;
+							printf("=======================================\n");
 #ifdef ROUTER
 							printf("USERNAME SEND: ZXR10 %d\n", used);
 #else
 							printf("USERNAME SEND: ubuntu %d\n", used);
 #endif
+							printf("%s\n", databuf);
+							printf("=======================================\n\n");
 						}
 						break;
 					case TELNET_SEND_PASSWORD:
@@ -183,16 +186,19 @@ int main(void)
 							assert(ret);
 
 							conn_status = TELNET_VERIFY_PASS;	
+							printf("=======================================\n");
 #ifdef ROUTER
 							printf("PASSWORD SEND: zsr %d\n", used);
 #else
 							printf("PASSWORD SEND: Wind142. %d\n", used);
 #endif
+							printf("%s\n", databuf);
+							printf("=======================================\n\n");
 						}
 						break;
 					case TELNET_VERIFY_PASS:
 						/*is the login successfull?*/
-						used = can_send_sh_cmd(databuf, data_len);
+						used = is_pass_valid(databuf, data_len);
 						if (used > 0)
 						{
 							ret = send(cfd, "sh", 2, MSG_NOSIGNAL);
@@ -200,15 +206,13 @@ int main(void)
 							ret = send(cfd, "\r\n", 2, MSG_NOSIGNAL);
 							assert(ret);
 
+							conn_status = TELNET_VERIFY_SH;
+
+							printf("=======================================\n");
 							printf("SH CMD SEND: sh %d\n", used);
 
-							conn_status = TELNET_VERIFY_SH;
-							/*report result to server*/
-							for (int i = 0; i < data_len; i++)
-							{
-								printf("%c", databuf[i]);
-							}
-							printf("\n");
+							printf("%s\n", databuf);
+							printf("=======================================\n\n");
 						}
 						else
 						{
@@ -217,24 +221,27 @@ int main(void)
 						break;
 					case TELNET_VERIFY_SH:
 						used = is_exec_sh_success(databuf, data_len);
+						if (used > 0)
 						{
-							if (used > 0)
-							{
-								conn_status = TELNET_LOGIN_SUCCESS;	
-								printf("login success!\n");
-								for (int i = 0; i < data_len; i++)
-								{
-									printf("%c", databuf[i]);
-								}
-								printf("\n");
-							}
+							conn_status = TELNET_LOGIN_SUCCESS;	
+							printf("=======================================\n");
+							printf("login success!\n");
+
+							printf("%s\n", databuf);
+							printf("=======================================\n\n");
 						}
+						break;
 					default:
-						used = 0;
+						used = -1;
 						break;
 				}
 
-				if (used < 0)
+				if (conn_status == TELNET_LOGIN_SUCCESS)
+				{
+					break;
+				}
+
+				if (used == -1)
 				{
 					break;
 				}
@@ -244,7 +251,8 @@ int main(void)
 					data_len = data_len - used;
 					if (data_len >= 0)
 					{
-						memmove(databuf, databuf+ret, data_len);
+						bzero(databuf, used);
+						memmove(databuf, databuf+used, data_len);
 					}
 					else
 					{
@@ -253,9 +261,10 @@ int main(void)
 				}
 			}
 		}
+
 		if (conn_status == TELNET_LOGIN_SUCCESS)
 		{
-			break;
+			break;	
 		}
 	}
 	return 0;
@@ -294,30 +303,20 @@ static int is_exec_sh_success(uint8_t *data, int data_len)
 	int handle_len = -1;
 	int i;
 	int ret;
-	printf("%s\n", data_ptr);
 
 	for (i = data_len; i > 0; i--)
 	{
-		if (data_ptr[i] == '$' || data_ptr[i] == '#' || data_ptr[i] == '%' || data_ptr[i] == '~' || data_ptr[i] == '>')
+		if (data_ptr[i] == '$' || data_ptr[i] == '#' || data_ptr[i] == '~')
 		{
 			handle_len = i;
 			break;
 		}
 	}
 
-	if (handle_len == 0)
-	{
-		ret = str_find(data, data_len, "sh");	
-		if (ret > 0)
-		{
-			handle_len = ret;	
-		}
-	}
-
 	return handle_len;
 }
 
-static int can_send_sh_cmd(uint8_t *data, int data_len)
+static int is_pass_valid(uint8_t *data, int data_len)
 {
 	char* data_ptr = (char*)data;
 	int handle_len = -1;
@@ -332,22 +331,26 @@ static int can_send_sh_cmd(uint8_t *data, int data_len)
 			break;
 		}
 	}
-	if (handle_len == 0)
-	{
-		ret = str_find(data, data_len, "ZXR10");	
-		if (ret > 0)
-		{
-			handle_len = ret;	
-		}
-	}
+	/*if (handle_len == -1)
+	  {
+#ifdef ROUTER
+ret = str_find(data, data_len, "ZXR10");	
+#else
+ret = str_find(data, data_len, "ubuntu");
+#endif
+if (ret > 0)
+{
+handle_len = ret;	
+}
+}*/
 
-	return handle_len;
+return handle_len;
 }
 
 static int can_send_username(uint8_t *data, int data_len)
 {
 	char *data_ptr = (char*)data;	
-	int handle_len = 0;
+	int handle_len = -1;
 	int i;
 	int ret;
 
@@ -356,16 +359,11 @@ static int can_send_username(uint8_t *data, int data_len)
 		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
 		{
 			handle_len = i;
-			printf("Find: username at %d\n", i);
 			break;
-		}
-		else
-		{
-			handle_len = 0;	
 		}
 	}
 
-	if (handle_len == 0)
+	if (handle_len == -1)
 	{
 		ret = str_find(data, data_len, "login");	
 		if (ret == -1)
@@ -381,7 +379,7 @@ static int can_send_username(uint8_t *data, int data_len)
 static int can_send_password(uint8_t *data, int data_len)
 {
 	char *data_ptr = (char*)data;
-	int handle_len = 0;
+	int handle_len = -1;
 	int ret;
 	int i;
 
@@ -390,16 +388,11 @@ static int can_send_password(uint8_t *data, int data_len)
 		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
 		{
 			handle_len = i;	
-			printf("Find: password at %d\n", i);
 			break;
-		}
-		else
-		{
-			handle_len = 0;	
 		}
 	}
 
-	if (handle_len == 0)
+	if (handle_len == -1)
 	{
 		ret = str_find(data, data_len, "ssword");	
 		handle_len = ret;
@@ -493,13 +486,13 @@ static int negotiate(uint8_t *data, int data_len)
 		else
 		{
 			/*if (data_ptr[1] == DO)
-			{
-				data_ptr[1] = WONT;	
-			}
-			else if (data_ptr[1] == WILL)
-			{
-				data_ptr[1] = DO;	
-			}*/
+			  {
+			  data_ptr[1] = WONT;	
+			  }
+			  else if (data_ptr[1] == WILL)
+			  {
+			  data_ptr[1] = DO;	
+			  }*/
 			data_ptr[1] = data_ptr[1] == DO ? WONT : DO;
 
 			ret = send(cfd, data_ptr, 3, MSG_NOSIGNAL);
